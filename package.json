@@ -1,0 +1,20 @@
+{
+  "name": "ai-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "要件定義から実装、テスト、Pull Request までをプロダクト共通で進める Cursor エージェントのハーネス",
+  "bin": {
+    "harness": "./src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "harness": "node src/cli.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.12"
+  }
+}

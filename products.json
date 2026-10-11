@@ -1,0 +1,11 @@
+[
+  { "id": "AQUASYNC", "path": "../AQUASYNC" },
+  { "id": "Yomu-Kamo", "path": "../Yomu-Kamo" },
+  { "id": "claude-automation", "path": "../claude-automation" },
+  { "id": "color-verse", "path": "../color-verse" },
+  { "id": "iorn121.github.io", "path": "../iorn121.github.io" },
+  { "id": "pocket-museum", "path": "../pocket-museum" },
+  { "id": "quant-ops", "path": "../quant-ops" },
+  { "id": "shinjuku-chronowalk", "path": "../shinjuku-chronowalk" },
+  { "id": "tabi-no-shiori", "path": "../tabi-no-shiori" }
+]
