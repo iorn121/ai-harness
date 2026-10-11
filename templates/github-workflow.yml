@@ -16,15 +16,13 @@ on:
         description: specify / implement / verify / release / all
         required: true
         default: all
-        type: string
-      yes:
-        description: 承認ゲートを通過する（通常は false）
-        required: true
-        default: "false"
         type: choice
         options:
-          - "false"
-          - "true"
+          - all
+          - specify
+          - implement
+          - verify
+          - release
   issues:
     types: [opened]
 
@@ -94,11 +92,7 @@ jobs:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
         run: |
           STAGE="${{ github.event_name == 'issues' && 'all' || github.event.inputs.stage }}"
-          YES=""
-          if [ "${{ github.event_name }}" = "issues" ] || [ "${{ github.event.inputs.yes }}" = "true" ]; then
-            YES="--yes"
-          fi
-          node src/cli.mjs run --cwd "$GITHUB_WORKSPACE" --stage "$STAGE" --brief-file /tmp/harness-brief.md $YES
+          node src/cli.mjs run --cwd "$GITHUB_WORKSPACE" --stage "$STAGE" --brief-file /tmp/harness-brief.md
 
       - name: Upload spec
         if: always()
