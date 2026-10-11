@@ -18,10 +18,13 @@ on:
         default: all
         type: string
       yes:
-        description: 承認ゲートを通過する
-        required: false
-        default: false
-        type: boolean
+        description: 承認ゲートを通過する（通常は false）
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
   issues:
     types: [opened]
 
