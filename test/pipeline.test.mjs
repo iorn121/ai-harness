@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { applyDefaults } from '../src/manifest.mjs';
 import { runPipeline } from '../src/pipeline.mjs';
@@ -32,6 +33,7 @@ function createHarness(overrides = {}) {
     cwd: '/repo',
     now,
     exists: (relativePath) => files.has(relativePath),
+    readFile: (relativePath) => overrides.filesContent?.[relativePath] ?? '',
     exec: async (command, execOptions) => {
       commands.push({ command, input: execOptions?.input });
       if (overrides.exec) return overrides.exec(command, statusCalls);
@@ -102,6 +104,43 @@ test('all continues through verify and stops before release when the spec gate i
   assert.equal(result.exitCode, 0);
   assert.equal(result.state.status, 'awaiting-release');
   assert.equal(harness.prompts.length, 2);
+  assert.equal(
+    harness.commands.filter((entry) => entry.command === 'npm test').length,
+    1,
+  );
+});
+
+test('verify skips npm ci when node_modules matches the recorded lockfile', async () => {
+  const lock = '{"name":"demo","lockfileVersion":3}\n';
+  const digest = createHash('sha256').update(lock).digest('hex');
+  const harness = createHarness({
+    requested: 'verify',
+    manifest: {
+      automation: 'attended',
+      commands: { install: 'npm ci', verify: ['npm test'] },
+    },
+    files: ['node_modules', 'package-lock.json', 'docs/specs/20261004-search.md'],
+    filesContent: { 'package-lock.json': lock },
+    state: {
+      id: '20261004-search',
+      agentId: 'agent-1',
+      specPath: 'docs/specs/20261004-search.md',
+      brief: '検索を追加する',
+      status: 'implemented',
+      nextStage: 'verify',
+      verifyAttempts: 0,
+      repairs: [],
+      branch: 'harness/20261004-search',
+      installLock: digest,
+    },
+  });
+  const result = await runPipeline(harness.ctx);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.state.status, 'verified');
+  assert.equal(
+    harness.commands.filter((entry) => entry.command === 'npm ci').length,
+    0,
+  );
   assert.equal(
     harness.commands.filter((entry) => entry.command === 'npm test').length,
     1,
