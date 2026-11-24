@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { HarnessError } from './errors.mjs';
 import { implementPrompt, specifyPrompt, verifyFixPrompt } from './prompts.mjs';
 import { planMechanicalRepair } from './repair.mjs';
@@ -270,15 +272,21 @@ async function runVerify(ctx, state) {
   }
   if (!Array.isArray(state.repairs)) state.repairs = [];
   if (ctx.manifest.commands.install) {
-    const installed = await runCommandWithRepair(ctx, state, ctx.manifest.commands.install);
-    if (installed.result.code !== 0) {
-      state.status = 'verify-failed';
-      return {
-        state,
-        stop: true,
-        exitCode: 2,
-        message: `インストールに失敗しました: ${ctx.manifest.commands.install}`,
-      };
+    if (canSkipInstall(ctx, state)) {
+      console.error('ロックファイルが前回のインストールから変わっていないので、再インストールを省略します。');
+    } else {
+      const installed = await runCommandWithRepair(ctx, state, ctx.manifest.commands.install);
+      if (installed.result.code !== 0) {
+        state.status = 'verify-failed';
+        return {
+          state,
+          stop: true,
+          exitCode: 2,
+          message: `インストールに失敗しました: ${ctx.manifest.commands.install}`,
+        };
+      }
+      const digest = readLockDigest(ctx);
+      if (digest) state.installLock = digest;
     }
   }
 
@@ -320,6 +328,33 @@ async function runVerify(ctx, state) {
       state.status = 'verify-failed';
       return { state, stop: true, exitCode: 2, message: '検証失敗の修正エージェントが失敗しました。' };
     }
+  }
+}
+
+/**
+ * npm ci / npm install は、同じ package-lock.json で node_modules があるとき再実行しない。
+ * @param {Record<string, any>} ctx
+ * @param {Record<string, any>} state
+ */
+function canSkipInstall(ctx, state) {
+  const command = ctx.manifest.commands?.install;
+  if (command !== 'npm ci' && command !== 'npm install') return false;
+  if (!ctx.exists('node_modules')) return false;
+  const digest = readLockDigest(ctx);
+  return Boolean(digest) && state.installLock === digest;
+}
+
+/**
+ * @param {Record<string, any>} ctx
+ */
+function readLockDigest(ctx) {
+  if (typeof ctx.readFile !== 'function' || !ctx.exists('package-lock.json')) return null;
+  try {
+    const text = ctx.readFile('package-lock.json');
+    if (!text) return null;
+    return createHash('sha256').update(text).digest('hex');
+  } catch {
+    return null;
   }
 }
 
