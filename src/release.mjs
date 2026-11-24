@@ -1,44 +1,22 @@
-import { HarnessError } from './errors.mjs';
+import { ReleaseTarget } from './domain/release-target.mjs';
 import { commitTitle } from './text.mjs';
 
-const AUTOMATED_BRANCH = /^(?:dependabot|renovate|snyk|pyup|pre-commit-ci|github-actions)(?:\/|$)/i;
-
-/**
- * Dependabot や Renovate など、ボットが自動で作るブランチ。
- * @param {string} branch
- */
 export function isAutomatedBranch(branch) {
-  return AUTOMATED_BRANCH.test(String(branch ?? '').trim());
+  return ReleaseTarget.isAutomated(branch);
 }
 
 /**
  * @param {string} branch
  */
 export function assertSafeBranch(branch) {
-  if (
-    typeof branch !== 'string' ||
-    !branch.startsWith('harness/') ||
-    branch === 'harness/' ||
-    branch.includes('..') ||
-    branch.includes(' ') ||
-    branch.startsWith('-') ||
-    branch.length > 120
-  ) {
-    throw new HarnessError(`安全でないブランチ名です: ${branch}`);
-  }
-  const name = branch.slice('harness/'.length);
-  if (name === 'main' || name === 'master') {
-    throw new HarnessError(`保護ブランチには push しません: ${branch}`);
-  }
+  ReleaseTarget.assertBranch(branch);
 }
 
 /**
  * @param {string} base
  */
 export function assertSafeBase(base) {
-  if (typeof base !== 'string' || !/^[A-Za-z0-9._/-]+$/.test(base) || base.includes('..')) {
-    throw new HarnessError(`安全でない base ブランチです: ${base}`);
-  }
+  ReleaseTarget.assertBase(base);
 }
 
 /**
@@ -107,19 +85,6 @@ export function openPullRequest(result) {
   }
 }
 
-const SENSITIVE_PATH = [
-  /^(?:.*\/)?\.harness(?:\/|$)/,
-  /^(?:.*\/)?\.env$/,
-  /^(?:.*\/)?\.env\./,
-  /^(?:.*\/)?credentials\.json$/,
-  /^(?:.*\/)?token\.json$/,
-  /^(?:.*\/)?playwright-report(?:\/|$)/,
-  /^(?:.*\/)?test-results(?:\/|$)/,
-];
-
-/**
- * @param {string[]} names
- */
 export function sensitiveCachedPaths(names) {
-  return names.filter((name) => SENSITIVE_PATH.some((pattern) => pattern.test(name)));
+  return ReleaseTarget.hiddenPaths(names);
 }
