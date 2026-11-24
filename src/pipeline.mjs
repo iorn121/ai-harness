@@ -1,3 +1,4 @@
+import { Run } from './domain/run.mjs';
 import { HarnessError } from './errors.mjs';
 import { implementPrompt, specifyPrompt, verifyFixPrompt } from './prompts.mjs';
 import { planMechanicalRepair } from './repair.mjs';
@@ -11,45 +12,13 @@ import {
 } from './release.mjs';
 import { englishBranch, parsePorcelain, slugFromBrief, specRelativePath, unexpectedSpecChanges } from './text.mjs';
 
-const ORDER = ['specify', 'implement', 'verify', 'release'];
 const VERIFIED = new Set(['verified', 'awaiting-release']);
 
 /**
  * @param {{ requested: string, state: Record<string, any> | null, yes: boolean, gates: { afterSpecify: boolean, beforeRelease: boolean }, brief?: string }} input
  */
 export function selectStages(input) {
-  if (input.requested !== 'all') return { stages: [input.requested], message: null, followUp: false };
-  const state = input.state;
-  const brief = String(input.brief ?? '').trim();
-  const openForFollowUp = new Set(['released', 'pushed', 'verified', 'awaiting-release', 'release-failed']);
-  if (brief && brief !== String(state?.brief ?? '').trim() && openForFollowUp.has(state?.status)) {
-    return { stages: ['implement', 'verify', 'release'], message: null, followUp: true };
-  }
-  if (state?.status === 'released') {
-    return {
-      stages: [],
-      followUp: false,
-      message:
-        'このランはリリース済みです。同じ Pull Request に足すには、--brief を付けて harness run を実行してください。',
-    };
-  }
-  if (state?.status === 'awaiting-approval' && !input.yes) {
-    return {
-      stages: [],
-      followUp: false,
-      message: `仕様を確認してください: ${state.specPath}\n続けるには harness run --stage implement`,
-    };
-  }
-  if (state && VERIFIED.has(state.status) && !input.yes && input.gates.beforeRelease) {
-    return {
-      stages: [],
-      followUp: false,
-      message: 'テストは通過しています。Pull Request を作るには harness run --stage release',
-    };
-  }
-  if (!state) return { stages: [...ORDER], message: null, followUp: false };
-  const index = ORDER.indexOf(state.nextStage ?? 'specify');
-  return { stages: index === -1 ? [...ORDER] : ORDER.slice(index), message: null, followUp: false };
+  return new Run(input.state).decide(input);
 }
 
 /**
