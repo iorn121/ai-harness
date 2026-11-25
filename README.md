@@ -1,6 +1,6 @@
 # ai-harness
 
-プロダクトごとの実装差を `harness.json` に閉じ込め、要件定義から Pull Request までを同じ段階で進める。実行本体は Cursor のローカルエージェント（`@cursor/sdk`）で、マージはしない。
+プロダクトごとの実装差を `harness.json` に閉じ込め、要件定義から Pull Request までを同じ段階で進める。実行本体は Claude Code（`claude -p`）で、マージはしない。
 
 ```
 specify → implement → verify → release
@@ -9,14 +9,17 @@ specify → implement → verify → release
 
 既定は `automation: unattended` です。仕様の承認とリリース前の目視では止まりません。テストが通ると Pull Request を作ります。main へのマージは行いません。人が確認したいときだけ `automation` を `attended` にし、`gates.afterSpecify` と `gates.beforeRelease` を true にします。
 
-ローカルエージェントの会話は同じマシンでしか再開できない。CI は 1 ジョブで完走させる。
+Claude の会話は同じマシンでしか再開できない。CI は 1 ジョブで完走させる。
 
 ## コマンド
 
 ```bash
 cd /path/to/ai-harness
 npm ci
-# キーは ~/.config/ai-harness/env の CURSOR_API_KEY を読む。環境変数があればそちらが優先される。
+# ローカルは `claude login` 済みなら追加のキーは不要。
+# CI や別アカウントで動かすときは ~/.config/ai-harness/env に
+# CLAUDE_CODE_OAUTH_TOKEN（claude setup-token）か ANTHROPIC_API_KEY を置く。
+# 環境変数があればそちらが優先される。
 
 node src/cli.mjs list
 node src/cli.mjs init --product color-verse
@@ -71,7 +74,7 @@ node src/cli.mjs run --product Yomu-Kamo --brief "メモの余白を広げる"
 ```json
 {
   "name": "color-verse",
-  "model": "composer-2.5",
+  "model": "sonnet",
   "specDir": "docs/specs",
   "commands": {
     "install": "npm ci",
@@ -86,6 +89,8 @@ node src/cli.mjs run --product Yomu-Kamo --brief "メモの余白を広げる"
 
 ## CI
 
-`templates/github-workflow.yml` をプロダクトの `.github/workflows/ai-harness.yml` にコピーする。リポジトリ変数 `AI_HARNESS_REPOSITORY` とシークレット `CURSOR_API_KEY` が必要。Issue タイトルに `[AI]` があり、起票者が Owner / Member / Collaborator のときだけ動く。
+`templates/github-workflow.yml` をプロダクトの `.github/workflows/ai-harness.yml` にコピーする。リポジトリ変数 `AI_HARNESS_REPOSITORY` と、シークレット `CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token` で発行）または `ANTHROPIC_API_KEY` が必要。Issue タイトルに `[AI]` があり、起票者が Owner / Member / Collaborator のときだけ動く。
 
-color-verse にある `remote-ai-agent.yml` は、このハーネスより前の Issue から PR までの経路として残している。
+`harness.json` の `model` は Claude Code に渡す。`composer` で始まる古い値は `sonnet` として扱う。
+
+color-verse にある `remote-ai-agent.yml` は、このハーネスより前の Issue から PR までの経路として残している。実行は同じ Claude Code を使う。

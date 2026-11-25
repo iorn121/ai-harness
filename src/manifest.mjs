@@ -56,7 +56,7 @@ export function applyDefaults(raw) {
   const manifest = {
     name: input.name.trim(),
     automation,
-    model: typeof input.model === 'string' && input.model.trim() ? input.model.trim() : 'composer-2.5',
+    model: typeof input.model === 'string' && input.model.trim() ? input.model.trim() : 'sonnet',
     specDir: typeof input.specDir === 'string' && input.specDir.trim() ? input.specDir.trim() : 'docs/specs',
     commands: { install, verify },
     release: { base, mode: 'pull-request' },

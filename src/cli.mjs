@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveApiKey } from './api-key.mjs';
+import { hasExplicitCredentials, resolveCredentials } from './api-key.mjs';
 import { detectFromTree } from './detect.mjs';
 import { inspectProduct } from './doctor.mjs';
 import { HarnessError } from './errors.mjs';
@@ -12,7 +12,7 @@ import { applyDefaults } from './manifest.mjs';
 import { runPipeline } from './pipeline.mjs';
 import { resolveProductPath } from './products.mjs';
 import { renderRunReport } from './report.mjs';
-import { sendPrompt } from './session.mjs';
+import { claudeLoggedIn, resolveClaudeBin, sendPrompt } from './session.mjs';
 
 const harnessRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const STAGES = new Set(['specify', 'implement', 'verify', 'release', 'all']);
@@ -189,9 +189,14 @@ async function run(cwd, opts) {
   const stage = typeof opts.stage === 'string' ? opts.stage : 'all';
   if (!STAGES.has(stage)) throw new HarnessError(`不明な stage です: ${stage}`);
   const manifest = loadManifest(cwd);
-  const apiKey = resolveApiKey({ env: process.env });
-  if (!apiKey) {
-    throw new HarnessError('CURSOR_API_KEY が未設定です。~/.config/ai-harness/env に置いてください。');
+  const credentials = resolveCredentials({ env: process.env });
+  if (!hasExplicitCredentials(credentials)) {
+    const loggedIn = await claudeLoggedIn({ bin: resolveClaudeBin(process.env) });
+    if (!loggedIn) {
+      throw new HarnessError(
+        'Claude Code にログインしていません。claude login するか、ANTHROPIC_API_KEY または CLAUDE_CODE_OAUTH_TOKEN を ~/.config/ai-harness/env に置いてください。',
+      );
+    }
   }
   const outcome = await runPipeline({
     manifest,
@@ -211,7 +216,7 @@ async function run(cwd, opts) {
         agentId: meta.agentId,
         cwd,
         model: manifest.model,
-        apiKey,
+        env: credentials,
         timeoutMs: manifest.limits.timeoutMs,
       }),
   });

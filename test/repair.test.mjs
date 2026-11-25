@@ -1,14 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { apiKeyFromEnvFile, resolveApiKey } from '../src/api-key.mjs';
+import { credentialsFromEnvFile, resolveCredentials } from '../src/api-key.mjs';
 import { inspectProduct } from '../src/doctor.mjs';
 import { planMechanicalRepair } from '../src/repair.mjs';
 import { renderRunReport } from '../src/report.mjs';
 
-test('reads the API key from the home env file', () => {
-  assert.equal(apiKeyFromEnvFile("CURSOR_API_KEY='cursor_test'\n"), 'cursor_test');
-  assert.equal(resolveApiKey({ env: {}, fileText: 'CURSOR_API_KEY=from-file\n' }), 'from-file');
-  assert.equal(resolveApiKey({ env: { CURSOR_API_KEY: 'from-env' }, fileText: 'CURSOR_API_KEY=from-file\n' }), 'from-env');
+test('reads Claude credentials from the home env file', () => {
+  assert.deepEqual(credentialsFromEnvFile("ANTHROPIC_API_KEY='claude_test'\n"), {
+    ANTHROPIC_API_KEY: 'claude_test',
+  });
+  assert.equal(
+    resolveCredentials({ env: {}, fileText: 'CLAUDE_CODE_OAUTH_TOKEN=from-file\n' }).CLAUDE_CODE_OAUTH_TOKEN,
+    'from-file',
+  );
+  assert.equal(
+    resolveCredentials({
+      env: { ANTHROPIC_API_KEY: 'from-env' },
+      fileText: 'ANTHROPIC_API_KEY=from-file\n',
+    }).ANTHROPIC_API_KEY,
+    'from-env',
+  );
 });
 
 test('plans a lockfile refresh when npm ci reports missing packages', () => {
