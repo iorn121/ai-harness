@@ -1,174 +1,273 @@
-import { EventEmitter, setMaxListeners } from 'node:events';
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { HarnessError } from './errors.mjs';
 
-setMaxListeners(32);
-EventEmitter.defaultMaxListeners = 32;
+export const DEFAULT_MODEL = 'sonnet';
 
 /**
- * @param {import('@cursor/sdk').Run} run
+ * Cursor のモデル名が残っていても Claude Code が受け取れる別名にする。
+ * @param {string | null | undefined} model
  */
-async function streamRun(run) {
-  for await (const event of run.stream()) {
-    if (event.type === 'assistant') {
-      for (const block of event.message.content) {
-        if (block.type === 'text') process.stdout.write(block.text);
-        else if (block.type === 'tool_use') process.stderr.write(`\n[tool] ${block.name}\n`);
-      }
-    } else if (event.type === 'tool_call') {
-      process.stderr.write(`\n[tool_call] ${event.name} (${event.status})\n`);
-    } else if (event.type === 'status') {
-      process.stderr.write(`\n[status] ${event.status}${event.message ? ` ${event.message}` : ''}\n`);
+export function normalizeModel(model) {
+  const value = String(model ?? '').trim();
+  if (!value || value.startsWith('composer')) return DEFAULT_MODEL;
+  return value;
+}
+
+/**
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function resolveClaudeBin(env = process.env) {
+  const configured = env.CLAUDE_BIN?.trim();
+  if (configured) return configured;
+  const directories = (env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  for (const directory of directories) {
+    const candidate = path.join(directory, 'claude');
+    if (existsSync(candidate)) return candidate;
+  }
+  const home = env.HOME || os.homedir();
+  for (const candidate of [
+    path.join(home, '.local', 'bin', 'claude'),
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+  ]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return 'claude';
+}
+
+/**
+ * @param {{ model?: string, sessionId?: string | null }} input
+ */
+export function claudeArgs(input) {
+  const args = [
+    '-p',
+    '--output-format',
+    'stream-json',
+    '--verbose',
+    '--permission-mode',
+    'bypassPermissions',
+    '--dangerously-skip-permissions',
+    '--model',
+    normalizeModel(input.model),
+    '--name',
+    'ai-harness',
+    '--setting-sources',
+    'project',
+  ];
+  if (input.sessionId) args.push('--resume', input.sessionId);
+  return args;
+}
+
+/**
+ * @param {string} output
+ * @param {number | null} code
+ */
+export function isResumeFailure(output, code) {
+  if (code === 0) return false;
+  return /no conversation found|session not found|invalid session|could not resume/i.test(output);
+}
+
+/**
+ * @param {string} stdout
+ */
+export function loggedInFromStatus(stdout) {
+  try {
+    return JSON.parse(stdout).loggedIn === true;
+  } catch {
+    return /"loggedIn"\s*:\s*true/.test(stdout);
+  }
+}
+
+/**
+ * @param {Record<string, any>} event
+ */
+export function consumeStreamEvent(event) {
+  /** @type {string[]} */
+  const texts = [];
+  /** @type {string[]} */
+  const tools = [];
+  if (event?.type === 'assistant') {
+    for (const block of event.message?.content ?? []) {
+      if (block?.type === 'text' && block.text) texts.push(block.text);
+      else if (block?.type === 'tool_use' && block.name) tools.push(block.name);
     }
   }
+  return {
+    texts,
+    tools,
+    result: event?.type === 'result' ? event : null,
+  };
 }
 
 /**
- * @param {import('@cursor/sdk').Run} run
- * @param {number} timeoutMs
+ * @param {{ bin?: string, env?: NodeJS.ProcessEnv, spawn?: typeof spawn }} [options]
  */
-async function runWithTimeout(run, timeoutMs) {
-  let timeoutId;
-  const timeout = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => {
-      reject(new HarnessError(`エージェントが ${timeoutMs}ms で時間切れになりました。`, 2));
-    }, timeoutMs);
+export function claudeLoggedIn(options = {}) {
+  const spawnImpl = options.spawn ?? spawn;
+  const bin = options.bin ?? resolveClaudeBin(options.env ?? process.env);
+  return new Promise((resolve, reject) => {
+    const child = spawnImpl(bin, ['auth', 'status'], {
+      env: options.env ?? process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.on('error', (error) => {
+      if (error && /** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
+        reject(new HarnessError('claude コマンドが見つかりません。Claude Code をインストールし、PATH に通してください。', 1));
+        return;
+      }
+      reject(error);
+    });
+    child.on('close', (code) => {
+      resolve(code === 0 && loggedInFromStatus(stdout));
+    });
   });
-  try {
-    const result = await Promise.race([
-      (async () => {
-        await streamRun(run);
-        return await run.wait();
-      })(),
-      timeout,
-    ]);
-    return result;
-  } catch (error) {
-    if (run.supports('cancel')) await run.cancel().catch(() => {});
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
 }
 
 /**
- * @param {{ [Symbol.asyncDispose](): Promise<void> }} agent
- */
-async function disposeAgent(agent) {
-  const ms = 30_000;
-  try {
-    await Promise.race([
-      agent[Symbol.asyncDispose](),
-      new Promise((_, reject) => {
-        setTimeout(() => reject(new Error(`dispose timed out after ${ms}ms`)), ms);
-      }),
-    ]);
-  } catch (error) {
-    console.error('[dispose]', error instanceof Error ? error.message : error);
-  }
-}
-
-/**
- * @param {unknown} error
- */
-export function isAgentBusy(error) {
-  const message = error instanceof Error ? error.message : String(error ?? '');
-  return /already has active run/i.test(message);
-}
-
-/**
- * @param {Array<{ id: string, status?: string, supports?: (op: string) => boolean, cancel?: () => Promise<void> }>} runs
- * @param {(runId: string) => Promise<void>} cancelRun
- */
-export async function cancelRunningRuns(runs, cancelRun) {
-  /** @type {string[]} */
-  const cancelled = [];
-  for (const run of runs) {
-    if (run.status !== 'running') continue;
-    if (typeof run.cancel === 'function' && run.supports?.('cancel') !== false) await run.cancel();
-    else await cancelRun(run.id);
-    cancelled.push(run.id);
-  }
-  return cancelled;
-}
-
-/**
- * @param {{ prompt: string, agentId?: string | null, cwd: string, model: string, apiKey: string, timeoutMs: number }} input
+ * @param {{ prompt: string, agentId?: string | null, cwd: string, model: string, timeoutMs: number, env?: NodeJS.ProcessEnv, bin?: string, spawn?: typeof spawn, onText?: (text: string) => void, onTool?: (name: string) => void }} input
  */
 export async function sendPrompt(input) {
-  const { Agent, CursorAgentError } = await import('@cursor/sdk');
-  const local = { cwd: input.cwd, settingSources: /** @type {const} */ (['project']) };
-  /** @type {{ agentId: string, send: (prompt: string) => Promise<import('@cursor/sdk').Run>, [Symbol.asyncDispose](): Promise<void> }} */
-  let agent;
-  try {
-    agent = input.agentId
-      ? await Agent.resume(input.agentId, {
-          apiKey: input.apiKey,
-          model: { id: input.model },
-          local,
-        })
-      : await Agent.create({
-          apiKey: input.apiKey,
-          model: { id: input.model },
-          name: 'ai-harness',
-          local,
-        });
-    console.error(`[harness] agent ${agent.agentId}`);
-    try {
-      const run = await sendOrReplaceBusyAgent(Agent, agent, input, local);
-      agent = run.agent;
-      console.error(`[harness] run ${run.run.id}`);
-      const result = await runWithTimeout(run.run, input.timeoutMs);
-      return {
-        status: result.status,
-        text: result.result ?? '',
-        agentId: agent.agentId,
-        runId: run.run.id,
-      };
-    } finally {
-      await disposeAgent(agent);
-    }
-  } catch (error) {
-    if (error instanceof HarnessError) throw error;
-    if (error instanceof CursorAgentError) {
-      throw new HarnessError(
-        `エージェントを起動できませんでした: ${error.message} (retryable=${error.isRetryable})`,
-        1,
-      );
-    }
-    throw error;
+  const first = await runClaudeOnce(input);
+  if (first.resumeFailed) {
+    console.error('[harness] session resume failed, starting a new session');
+    const retry = await runClaudeOnce({ ...input, agentId: null });
+    return toResult(retry);
   }
+  return toResult(first);
 }
 
 /**
- * @param {typeof import('@cursor/sdk').Agent} Agent
- * @param {{ agentId: string, send: (prompt: string) => Promise<import('@cursor/sdk').Run>, [Symbol.asyncDispose](): Promise<void> }} agent
- * @param {{ prompt: string, cwd: string, model: string, apiKey: string }} input
- * @param {{ cwd: string, settingSources: readonly ['project'] }} local
+ * @param {{ status: string, text: string, agentId: string | null, runId: string | null }} outcome
  */
-async function sendOrReplaceBusyAgent(Agent, agent, input, local) {
-  try {
-    return { agent, run: await agent.send(input.prompt) };
-  } catch (error) {
-    if (!isAgentBusy(error)) throw error;
-    const listed = await Agent.listRuns(agent.agentId, { runtime: 'local', cwd: input.cwd });
-    const cancelled = await cancelRunningRuns(listed.items, (runId) =>
-      Agent.cancelRun(runId, { runtime: 'local', cwd: input.cwd }),
-    );
-    console.error(`[harness] cancelled active run: ${cancelled.join(', ') || '(none)'}`);
+/**
+ * @param {NodeJS.ProcessEnv | Record<string, string> | undefined} env
+ */
+function definedEnv(env) {
+  return Object.fromEntries(Object.entries(env ?? {}).filter(([, value]) => Boolean(value)));
+}
+
+function toResult(outcome) {
+  return {
+    status: outcome.status,
+    text: outcome.text,
+    agentId: outcome.agentId,
+    runId: outcome.runId,
+  };
+}
+
+/**
+ * @param {{ prompt: string, agentId?: string | null, cwd: string, model: string, timeoutMs: number, env?: NodeJS.ProcessEnv, bin?: string, spawn?: typeof spawn, onText?: (text: string) => void, onTool?: (name: string) => void }} input
+ */
+function runClaudeOnce(input) {
+  const spawnImpl = input.spawn ?? spawn;
+  const bin = input.bin ?? resolveClaudeBin(input.env ?? process.env);
+  const args = claudeArgs({ model: input.model, sessionId: input.agentId });
+  const onText = input.onText ?? ((text) => process.stdout.write(text));
+  const onTool = input.onTool ?? ((name) => process.stderr.write(`\n[tool] ${name}\n`));
+
+  return new Promise((resolve, reject) => {
+    let child;
     try {
-      return { agent, run: await agent.send(input.prompt) };
-    } catch (again) {
-      if (!isAgentBusy(again)) throw again;
-      console.error('[harness] agent still busy, starting a new agent');
-      await disposeAgent(agent);
-      const created = await Agent.create({
-        apiKey: input.apiKey,
-        model: { id: input.model },
-        name: 'ai-harness',
-        local,
+      child = spawnImpl(bin, args, {
+        cwd: input.cwd,
+        env: { ...process.env, ...definedEnv(input.env) },
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
-      console.error(`[harness] agent ${created.agentId}`);
-      return { agent: created, run: await created.send(input.prompt) };
+    } catch (error) {
+      reject(error);
+      return;
     }
-  }
+
+    let settled = false;
+    let stdout = '';
+    let stderr = '';
+    /** @type {Record<string, any> | null} */
+    let resultEvent = null;
+    let lineBuffer = '';
+
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      finish(() => {
+        reject(new HarnessError(`エージェントが ${input.timeoutMs}ms で時間切れになりました。`, 2));
+      });
+    }, input.timeoutMs);
+
+    const takeLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('{')) return;
+      let event;
+      try {
+        event = JSON.parse(trimmed);
+      } catch {
+        return;
+      }
+      const consumed = consumeStreamEvent(event);
+      for (const text of consumed.texts) onText(text);
+      for (const name of consumed.tools) onTool(name);
+      if (consumed.result) resultEvent = consumed.result;
+    };
+
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk;
+      lineBuffer += chunk;
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop() ?? '';
+      for (const line of lines) takeLine(line);
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk;
+      process.stderr.write(chunk);
+    });
+    child.on('error', (error) => {
+      finish(() => {
+        if (error && /** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
+          reject(new HarnessError('claude コマンドが見つかりません。Claude Code をインストールし、PATH に通してください。', 1));
+          return;
+        }
+        reject(error);
+      });
+    });
+    child.on('close', (code) => {
+      if (lineBuffer) takeLine(lineBuffer);
+      const output = `${stderr}\n${stdout}`;
+      finish(() => {
+        if (input.agentId && isResumeFailure(output, code)) {
+          resolve({
+            resumeFailed: true,
+            status: 'error',
+            text: '',
+            agentId: null,
+            runId: null,
+          });
+          return;
+        }
+        const failed = code !== 0 || resultEvent?.is_error === true || resultEvent?.subtype === 'error';
+        console.error(`[harness] claude exit ${code ?? 'null'}`);
+        resolve({
+          resumeFailed: false,
+          status: failed ? 'error' : 'finished',
+          text: typeof resultEvent?.result === 'string' ? resultEvent.result : '',
+          agentId: resultEvent?.session_id ?? input.agentId ?? null,
+          runId: resultEvent?.session_id ?? null,
+        });
+      });
+    });
+
+    child.stdin?.write(input.prompt);
+    child.stdin?.end();
+  });
 }
